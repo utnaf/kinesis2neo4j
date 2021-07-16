@@ -1,0 +1,3 @@
+target/
+.idea/
+kinesis2Neo4jCheckpoint
