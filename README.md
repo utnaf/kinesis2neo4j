@@ -1,4 +1,4 @@
-# (Kinesis)-[:WRITES_TO]-(Neo4j)
+# (stream:Kinesis)-[:WRITES_TO]->(graph:Neo4j)
 
 Spark pipeline to write data streams from Kinesis to Neo4j.
 
