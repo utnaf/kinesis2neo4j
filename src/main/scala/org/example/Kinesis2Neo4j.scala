@@ -7,21 +7,41 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 object Kinesis2Neo4j {
 
   def main(args: Array[String]): Unit = {
-    val appName = "Kinesis2Neo4j"
-    val endpoint = "https://kinesis.eu-central-1.amazonaws.com"
+    // This is the Kinesis Data Stream name you set when creating the stream
+    val streamName = "Kinesis2Neo4j"
 
+    // Kinesis endpoint, can be found here https://docs.aws.amazon.com/general/latest/gr/ak.html
+    val kinesisEndpoint = "https://kinesis.eu-central-1.amazonaws.com"
+
+    /**
+     * Create the Spark Session with a local instance.
+     * We can use the streamName as the Spark app name.
+     *
+     * https://spark.apache.org/docs/latest/sql-getting-started.html
+     */
     val ss = SparkSession
       .builder()
       .master("local[*]")
-      .appName(appName)
+      .appName(streamName)
       .getOrCreate()
 
     import ss.implicits._
 
+    /**
+     * We leverage the Kinesis Connector for Spark
+     * https://github.com/qubole/kinesis-sql
+     *
+     * You can set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY directly
+     * in the option, or you can add them as Environment variables
+     *
+     * NOTE: startingPosition is the starting position in Kinesis to fetch data from.
+     * We want just the new data, reference to the Kinesis Connector docs for
+     * other possible values.
+     */
     val kinesisStream = ss.readStream
       .format("kinesis")
-      .option("streamName", appName)
-      .option("endpointUrl", endpoint)
+      .option("streamName", streamName)
+      .option("endpointUrl", kinesisEndpoint)
       .option("awsAccessKeyId", sys.env.get("AWS_ACCESS_KEY_ID").orNull)
       .option("awsSecretKey", sys.env.get("AWS_SECRET_ACCESS_KEY").orNull)
       .option("startingPosition", "LATEST")
@@ -33,18 +53,25 @@ object Kinesis2Neo4j {
       StructField("event_name", DataTypes.StringType, nullable = false),
     ))
 
-    val kinesisQuery = kinesisStream
+    val kinesisData = kinesisStream
       .selectExpr("CAST(data AS STRING)").as[String]
-      .withColumn("jsonData", from_json(col("data"), kinesisStreamDataSchema))
+      .withColumn(
+        "jsonData",
+        from_json(col("data"), kinesisStreamDataSchema)
+      )
       .select("jsonData.*")
+
+    val kinesisQuery = kinesisData
       .writeStream
+      // connection options
       .format("org.neo4j.spark.DataSource")
       .option("url", "bolt://localhost:7687")
       .option("authentication.type", "basic")
       .option("authentication.basic.username", "neo4j")
       .option("authentication.basic.password", "password")
-      .option("save.mode", "Append")
       .option("checkpointLocation", "./kinesis2Neo4jCheckpoint")
+      // actual writing setup
+      .option("save.mode", "Append")
       .option("relationship", "CHECKED_IN")
       .option("relationship.save.strategy", "keys")
       .option("relationship.properties", "user_checkin_time:at")
@@ -56,12 +83,6 @@ object Kinesis2Neo4j {
       .option("relationship.target.node.keys", "event_name:name")
       .start()
 
-    Thread.sleep(25 * 1000)
-
-    try {
-      kinesisQuery.stop()
-    } catch {
-      case _: Throwable => println("+++ Successfully aborted");
-    }
+    kinesisQuery.awaitTermination()
   }
 }
